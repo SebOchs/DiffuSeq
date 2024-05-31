@@ -1,23 +1,23 @@
 # import blobfile as bf
-import numpy as np
-from torch.utils.data import DataLoader, Dataset
-from torch.utils.data.distributed import DistributedSampler
-
-import torch
 import json
-import psutil
+
 import datasets
+import numpy as np
+import psutil
+import torch
 from datasets import Dataset as Dataset2
+from torch.utils.data import DataLoader, Dataset
+
 
 def load_data_text(
-    batch_size, 
-    seq_len, 
-    deterministic=False, 
-    data_args=None, 
-    model_emb=None,
-    split='train', 
-    loaded_vocab=None,
-    loop=True,
+        batch_size,
+        seq_len,
+        deterministic=False,
+        data_args=None,
+        model_emb=None,
+        split='train',
+        loaded_vocab=None,
+        loop=True,
 ):
     """
     For a dataset, create a generator over (seqs, kwargs) pairs.
@@ -35,7 +35,7 @@ def load_data_text(
     :param loop: loop to get batch data or not.
     """
 
-    print('#'*30, '\nLoading text data...')
+    print('#' * 30, '\nLoading text data...')
 
     training_data = get_corpus(data_args, seq_len, split=split, loaded_vocab=loaded_vocab)
 
@@ -46,34 +46,21 @@ def load_data_text(
     )
 
     if split != 'test':
-        sampler = DistributedSampler(dataset)
         data_loader = DataLoader(
             dataset,
-            batch_size=batch_size,  # 20,
-            # drop_last=True,
-            sampler=sampler,
-            # shuffle=not deterministic,
-            num_workers=4,
+            batch_size=batch_size,
+            num_workers=0,
         )
     else:
         data_loader = DataLoader(
             dataset,
-            batch_size=batch_size,  # 20,
-            # drop_last=True,
-            # sampler=sampler,
-            shuffle=not deterministic,
-            num_workers=4,
+            batch_size=batch_size,
+            shuffle=False,
+            num_workers=0,
         )
 
-    if loop:
-        return infinite_loader(data_loader)
-    else:
-        # print(data_loader)
-        return iter(data_loader)
+    return data_loader
 
-def infinite_loader(data_loader):
-    while True:
-        yield from data_loader
 
 def helper_tokenize(sentence_lst, vocab_dict, seq_len):
     # Process.memory_info is expressed in bytes, so convert to megabytes
@@ -109,9 +96,9 @@ def helper_tokenize(sentence_lst, vocab_dict, seq_len):
             src = group_lst['input_id_x'][i][:-1]
             trg = group_lst['input_id_y'][i][:-1]
             while len(src) + len(trg) > seq_len - 3:
-                if len(src)>len(trg):
+                if len(src) > len(trg):
                     src.pop()
-                elif len(src)<len(trg):
+                elif len(src) < len(trg):
                     trg.pop()
                 else:
                     src.pop()
@@ -120,18 +107,18 @@ def helper_tokenize(sentence_lst, vocab_dict, seq_len):
             trg.append(end_token)
 
             lst.append(src + [vocab_dict.sep_token_id] + trg)
-            mask.append([0]*(len(src)+1))
+            mask.append([0] * (len(src) + 1))
         group_lst['input_ids'] = lst
         group_lst['input_mask'] = mask
         return group_lst
-    
+
     tokenized_datasets = tokenized_datasets.map(
         merge_and_mask,
         batched=True,
         num_proc=1,
         desc=f"merge and mask",
     )
-    
+
     def pad_function(group_lst):
         max_length = seq_len
         group_lst['input_ids'] = _collate_batch_helper(group_lst['input_ids'], vocab_dict.pad_token_id, max_length)
@@ -157,11 +144,10 @@ def helper_tokenize(sentence_lst, vocab_dict, seq_len):
 
 
 def get_corpus(data_args, seq_len, split='train', loaded_vocab=None):
+    print('#' * 30, '\nLoading dataset {} from {}...'.format(data_args.dataset, data_args.data_dir))
 
-    print('#'*30, '\nLoading dataset {} from {}...'.format(data_args.dataset, data_args.data_dir))
+    sentence_lst = {'src': [], 'trg': []}
 
-    sentence_lst = {'src':[], 'trg': []}
-    
     if split == 'train':
         print('### Loading form the TRAIN set...')
         path = f'{data_args.data_dir}/train.jsonl'
@@ -181,7 +167,7 @@ def get_corpus(data_args, seq_len, split='train', loaded_vocab=None):
             sentence_lst['trg'].append(content['trg'].strip())
 
     print('### Data samples...\n', sentence_lst['src'][:2], sentence_lst['trg'][:2])
-        
+
     # get tokenizer.
     vocab_dict = loaded_vocab
 
@@ -202,7 +188,6 @@ class TextDataset(Dataset):
 
     def __getitem__(self, idx):
         with torch.no_grad():
-
             input_ids = self.text_datasets['train'][idx]['input_ids']
             hidden_state = self.model_emb(torch.tensor(input_ids))
 
@@ -214,6 +199,7 @@ class TextDataset(Dataset):
             out_kwargs['input_mask'] = np.array(self.text_datasets['train'][idx]['input_mask'])
 
             return arr, out_kwargs
+
 
 def _collate_batch_helper(examples, pad_token_id, max_length, return_mask=False):
     result = torch.full([len(examples), max_length], pad_token_id, dtype=torch.int64).tolist()

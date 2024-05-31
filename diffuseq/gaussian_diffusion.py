@@ -5,18 +5,16 @@ https://github.com/hojonathanho/diffusion/blob/1e0dceb3b3495bbe19116a5e1b3596cd0
 Docstrings have been added, as well as DDIM sampling and a new collection of beta schedules.
 """
 
-import enum
 import math
+import sys
 
 import numpy as np
 import torch as th
-import sys
+
 sys.path.append('.')
 
-import torch.nn.functional as F
-
 from .utils.nn import mean_flat
-from .utils.losses import normal_kl, discretized_gaussian_log_likelihood
+
 
 def get_named_beta_schedule(schedule_name, num_diffusion_timesteps):
     """
@@ -580,7 +578,7 @@ class GaussianDiffusion:
 
         return {'pred_xprev':pred_prev, 'pred_xstart':pred_xstart}
 
-    def training_losses_seq2seq(self, model, x_start, t, model_kwargs=None, noise=None):
+    def training_losses_seq2seq(self, model, x_start, t, private=False, model_kwargs=None, noise=None):
         """
         Compute training losses for a single timestep.
 
@@ -597,7 +595,11 @@ class GaussianDiffusion:
         assert 'input_ids' in model_kwargs
         input_ids_x = model_kwargs.pop('input_ids').to(t.device)
         input_ids_mask = model_kwargs.pop('input_mask').to(t.device)
-        x_start_mean = model.model.module.get_embeds(input_ids_x)
+
+        if private:
+            x_start_mean = model.model._module.get_embeds(input_ids_x)
+        else:
+            x_start_mean = model.model.get_embeds(input_ids_x)
         
         std = _extract_into_tensor(self.sqrt_one_minus_alphas_cumprod,
                                    th.tensor([0]).to(x_start_mean.device),
@@ -611,8 +613,10 @@ class GaussianDiffusion:
 
         x_t = self.q_sample(x_start, t, noise=noise, mask=input_ids_mask) # reparametrization trick.
 
-        get_logits = model.model.module.get_logits
-
+        if private:
+            get_logits = model.model._module.get_logits
+        else:
+            get_logits = model.model.get_logits
         terms = {}
 
         target = x_start

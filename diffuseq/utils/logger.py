@@ -14,7 +14,6 @@ import tempfile
 import warnings
 from collections import defaultdict
 from contextlib import contextmanager
-import wandb
 
 DEBUG = 10
 INFO = 20
@@ -368,11 +367,10 @@ class Logger(object):
                 d["dummy"] = 1  # so we don't get a warning about empty dict
         # LISA
         out = d.copy()  # Return the dict for unit testing purposes
-        if int(os.environ['LOCAL_RANK']) == 0:
-            wandb.log({**d})
-            for fmt in self.output_formats:
-                if isinstance(fmt, KVWriter):
-                    fmt.writekvs(d)
+
+        for fmt in self.output_formats:
+            if isinstance(fmt, KVWriter):
+                fmt.writekvs(d)
         self.name2val.clear()
         self.name2cnt.clear()
         return out

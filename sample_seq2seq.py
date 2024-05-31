@@ -27,6 +27,7 @@ from basic_utils import (
     load_tokenizer
 )
 
+
 def create_argparser():
     defaults = dict(model_path='', step=0, out_dir='', top_p=0)
     decode_defaults = dict(split='valid', clamp_step=0, seed2=105, clip_denoised=False)
@@ -72,8 +73,8 @@ def main():
 
     tokenizer = load_tokenizer(args)
     model_emb = th.nn.Embedding(
-        num_embeddings=tokenizer.vocab_size, 
-        embedding_dim=args.hidden_dim, 
+        num_embeddings=tokenizer.vocab_size,
+        embedding_dim=args.hidden_dim,
         _weight=model.word_embedding.weight.clone().cpu()
     ).eval().requires_grad_(False)
 
@@ -158,7 +159,7 @@ def main():
             step_gap = 1
         else:
             args.use_ddim = True
-            step_gap = args.diffusion_steps//args.step
+            step_gap = args.diffusion_steps // args.step
 
         sample_fn = (
             diffusion.p_sample_loop if not args.use_ddim else diffusion.ddim_sample_loop

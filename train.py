@@ -3,11 +3,13 @@ Train a diffusion model on images.
 """
 
 import argparse
-import json, torch, os
-import numpy as np
-from diffuseq.utils import dist_util, logger
-from diffuseq.text_datasets import load_data_text
-from diffuseq.step_sample import create_named_schedule_sampler
+import json
+import os
+
+import opacus
+import torch
+from transformers import set_seed
+
 from basic_utils import (
     load_defaults_config,
     create_model_and_diffusion,
@@ -16,25 +18,38 @@ from basic_utils import (
     load_model_emb,
     load_tokenizer
 )
+from diffuseq.step_sample import create_named_schedule_sampler
+from diffuseq.text_datasets import load_data_text
+from diffuseq.utils import logger
 from train_util import TrainLoop
-from transformers import set_seed
-import wandb
 
-### custom your wandb setting here ###
-# os.environ["WANDB_API_KEY"] = ""
 os.environ["WANDB_MODE"] = "offline"
+
 
 def create_argparser():
     defaults = dict()
     defaults.update(load_defaults_config())
     parser = argparse.ArgumentParser()
-    add_dict_to_argparser(parser, defaults) # update latest args according to argparse
+    parser.add_argument('--private', type=bool, default=True, help='run fine-tuning with DP')
+    parser.add_argument('--epsilon', type=int, default=1, help='if dp, how large should epsilon be?')
+    add_dict_to_argparser(parser, defaults)  # update latest args according to argparse
+
     return parser
+
 
 def main():
     args = create_argparser().parse_args()
-    set_seed(args.seed) 
-    dist_util.setup_dist()
+    # update args
+    args.learning_steps = 50000
+    args.save_interval = 100
+    args.dataset = 'qqp'
+    args.data_dir = 'datasets/QQP'
+    args.checkpoint_path = 'diffuseq_qqp_h128_lr0.0001_t2000_sqrt_lossaware_seed102_test_ori20221113-20:27:29'
+    args.config_name = 'bert-base-uncased'
+    args.batch_size = 8
+
+
+    set_seed(args.seed)
     logger.configure()
     logger.log("### Creating data loader...")
 
@@ -44,11 +59,11 @@ def main():
     data = load_data_text(
         batch_size=args.batch_size,
         seq_len=args.seq_len,
-        data_args = args,
+        data_args=args,
         loaded_vocab=tokenizer,
-        model_emb=model_weight # use model's weights as init
+        model_emb=model_weight  # use model's weights as init
     )
-    next(data)
+
 
     data_valid = load_data_text(
         batch_size=args.batch_size,
@@ -57,19 +72,17 @@ def main():
         split='valid',
         deterministic=True,
         loaded_vocab=tokenizer,
-        model_emb=model_weight # using the same embedding wight with tranining data
+        model_emb=model_weight  # using the same embedding wight with tranining data
     )
 
-    print('#'*30, 'size of vocab', args.vocab_size)
+    print('#' * 30, 'size of vocab', args.vocab_size)
 
     logger.log("### Creating model and diffusion...")
-    # print('#'*30, 'CUDA_VISIBLE_DEVICES', os.environ['CUDA_VISIBLE_DEVICES'])
     model, diffusion = create_model_and_diffusion(
         **args_to_dict(args, load_defaults_config().keys())
     )
-    # print('#'*30, 'cuda', dist_util.dev())
-    model.to(dist_util.dev()) #  DEBUG **
-    # model.cuda() #  DEBUG **
+    model.cuda()
+    opt = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=0.0)
 
     pytorch_total_params = sum(p.numel() for p in model.parameters())
 
@@ -80,14 +93,20 @@ def main():
     with open(f'{args.checkpoint_path}/training_args.json', 'w') as f:
         json.dump(args.__dict__, f, indent=2)
 
-    if ('LOCAL_RANK' not in os.environ) or (int(os.environ['LOCAL_RANK']) == 0):
-        wandb.init(
-            project=os.getenv("WANDB_PROJECT", "DiffuSeq"),
-            name=args.checkpoint_path,
-        )
-        wandb.config.update(args.__dict__, allow_val_change=True)
-
     logger.log("### Training...")
+
+    # make private
+    if args.private:
+        privacy_engine = opacus.PrivacyEngine()
+        model, opt, data = privacy_engine.make_private_with_epsilon(
+            module=model,
+            optimizer=opt,
+            data_loader=data,
+            target_epsilon=args.epsilon,
+            target_delta=(len(data.dataset) * 10) ** -1,
+            epochs=1,
+            max_grad_norm=1.0
+        )
 
     TrainLoop(
         model=model,
@@ -108,8 +127,11 @@ def main():
         checkpoint_path=args.checkpoint_path,
         gradient_clipping=args.gradient_clipping,
         eval_data=data_valid,
-        eval_interval=args.eval_interval
+        eval_interval=args.eval_interval,
+        opt=opt,
+        private=args.private
     ).run_loop()
+
 
 if __name__ == "__main__":
     main()
